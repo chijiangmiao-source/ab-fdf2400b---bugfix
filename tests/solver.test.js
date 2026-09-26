@@ -1,6 +1,7 @@
 /*
  * 求解器测试：
  *  · 闭环矛盾样例（局部逐边累加非最优）的精确结论；
+ *  · 批量验收：8 探针 / 24 条读数、混合正反方向的重复读数取全局最优；
  *  · 字典序平局规则、方向性、权重、退化范围、自环等语义；
  *  · 错误定位（范围为空 / 参考点越界 / 端点不存在等）；
  *  · 与暴力枚举的随机对拍（仅测试使用枚举，求解器本身不枚举）；
@@ -355,4 +356,135 @@ test('大目标差值不触发逐层展开（常量区间解析累加）', () =>
   // x1 − x0 最多为 5，残差恒为 5 − 1e6
   assert.deepEqual(r.phases.map((p) => p.phase), [0, 5]);
   assert.equal(r.totalCost, 3 * Math.abs(5 - 1000000));
+});
+
+/* ---------------- 批量验收：8 探针 / 24 条读数 ---------------- */
+
+function batchInput() {
+  const edges = [
+    { from: 0, to: 1, target: 0, weight: 1 },   // P0→P1 目标 0
+    { from: 1, to: 0, target: -10, weight: 1 }, // P1→P0 目标 −10（反向读数）
+    { from: 0, to: 1, target: 10, weight: 1 },  // P0→P1 目标 10（重复端点）
+  ];
+  for (let i = 0; i < 21; i++) {
+    edges.push({ from: 2, to: 2, target: 0, weight: 1 }); // 自环
+  }
+  return {
+    probes: Array.from({ length: 8 }, (_, i) => ({ id: i, lo: -10, hi: 10 })),
+    reference: 0,
+    edges,
+  };
+}
+
+test('批量场景（8 探针 24 读数）：混合正反方向的重复读数取全局最优，而非加权均值折中', () => {
+  const r = solver.solve(batchInput());
+  assert.ok(r.ok, JSON.stringify(r.errors));
+
+  // 正确结论：P0=0、P1=10（加权中位数），其余未受约束探针均取下限 −10（字典序最小）
+  assert.deepEqual(
+    r.phases.map((p) => p.phase),
+    [0, 10, -10, -10, -10, -10, -10, -10],
+  );
+  assert.equal(r.totalCost, 10);
+
+  // 三条关键读数：实际差 / 残差 / 贡献
+  assert.deepEqual(
+    r.edges.slice(0, 3).map((e) => [e.actual, e.residual, e.contribution]),
+    [[10, 10, 10], [-10, 0, 0], [10, 0, 0]],
+  );
+  // 21 条自环：实际差、残差、贡献均为 0
+  for (const e of r.edges.slice(3)) {
+    assert.equal(e.from, 2);
+    assert.equal(e.to, 2);
+    assert.deepEqual([e.actual, e.residual, e.contribution], [0, 0, 0]);
+  }
+
+  // 明细行按提交顺序返回，且贡献之和恰为总代价
+  r.edges.forEach((e, i) => {
+    assert.equal(e.index, i);
+    assert.deepEqual(
+      { from: e.from, to: e.to, target: e.target, weight: e.weight },
+      batchInput().edges[i],
+    );
+    assert.equal(e.contribution, e.weight * Math.abs(e.residual));
+  });
+  assert.equal(r.edges.reduce((s, e) => s + e.contribution, 0), r.totalCost);
+
+  // 流值不变量：maxflow + 常量项 ≡ 总代价
+  assert.equal(r.stats.flowValue + r.stats.constantTerm, r.totalCost);
+
+  // 加权均值折中（P1=7，代价 13）必须不再出现
+  assert.notEqual(r.phases[1].phase, 7);
+});
+
+test('批量场景：探针与读数输入重排不改变结论，明细仍按原始每条观测给出', () => {
+  const input = batchInput();
+  const shuffled = {
+    probes: [...input.probes].reverse(),
+    reference: 0,
+    edges: [...input.edges].reverse(),
+  };
+  const r1 = solver.solve(input);
+  const r2 = solver.solve(shuffled);
+  assert.ok(r2.ok, JSON.stringify(r2.errors));
+
+  // 相位按标识排序，重排后结论一致
+  assert.deepEqual(r2.phases, r1.phases);
+  assert.equal(r2.totalCost, r1.totalCost);
+
+  // 明细按各自提交顺序返回：反向提交后第 0 行应为原最后一条自环
+  assert.deepEqual(
+    { from: r2.edges[0].from, to: r2.edges[0].to, target: r2.edges[0].target, weight: r2.edges[0].weight },
+    shuffled.edges[0],
+  );
+  // 三条关键读数在重排结果中仍可逐条复算
+  const keyRows = r2.edges
+    .filter((e) => e.from <= 1 && e.to <= 1)
+    .sort((a, b) => a.target - b.target);
+  assert.deepEqual(
+    keyRows.map((e) => [e.actual, e.residual, e.contribution]),
+    [[-10, 0, 0], [10, 10, 10], [10, 0, 0]],
+  );
+});
+
+test('随机对拍（批量路径：8 探针、≥24 条边、含反向重复/自环/异权重）与暴力枚举一致', () => {
+  const rand = mulberry32(20260926);
+  const ri = (n) => Math.floor(rand() * n);
+  const n = 8;
+
+  for (let trial = 0; trial < 25; trial++) {
+    const probes = [];
+    for (let i = 0; i < n; i++) {
+      const lo = ri(3) - 1; // −1..1
+      const hi = lo + ri(3); // 宽度 0..2，保证暴力枚举可行
+      probes.push({ id: i, lo, hi });
+    }
+    const reference = ri(n);
+    probes[reference] = { id: reference, lo: -ri(3), hi: ri(3) }; // 保证含 0
+
+    const m = 24 + ri(9); // 24–32 条边，进入批量场景
+    const edges = [];
+    for (let i = 0; i < m; i++) {
+      edges.push({
+        from: ri(n),
+        to: ri(n),
+        target: ri(9) - 4, // −4..4
+        weight: 1 + ri(5), // 1..5，异权重
+      });
+    }
+
+    const input = { probes, reference, edges };
+    const r = solver.solve(input);
+    assert.ok(r.ok, `批量 trial ${trial}: ${JSON.stringify(r.errors)}`);
+
+    const bf = bruteForce(input);
+    assert.equal(r.totalCost, bf.cost, `批量 trial ${trial} 成本不一致: ${JSON.stringify(input)}`);
+    assert.deepEqual(
+      r.phases.map((p) => p.phase),
+      bf.vec,
+      `批量 trial ${trial} 字典序最小向量不一致: ${JSON.stringify(input)}`,
+    );
+    assert.equal(r.stats.flowValue + r.stats.constantTerm, r.totalCost,
+      `批量 trial ${trial} 流值不变量被破坏`);
+  }
 });

@@ -34,7 +34,7 @@
     MAX_ABS_BOUND: 1e6,    // |lo|、|hi|、|target| 的上限
     MAX_WEIGHT: 1e6,       // 权重上限（正整数）
     MAX_EDGES: 1600,       // 40 探针全连接有向边（含自环）为 1600
-    MAX_GRAPH_ARCS: 2e6,   // 归约图规模保护
+    MAX_GRAPH_ARCS: 1e6,   // 归约图规模保护
   };
 
   const label = (id) => 'P' + id;
@@ -221,6 +221,8 @@
     probes[refPos].lo = 0;
     probes[refPos].hi = 0;
 
+    // 每条观测独立入图：同端点的重复/反向读数不得合并——
+    // Σ wᵢ·|d − tᵢ| 的最小值在加权中位数处取得，合并为加权均值目标会改变全局最优解。
     const edges = (input.edges || []).map((e) => ({
       from: e.from,
       to: e.to,

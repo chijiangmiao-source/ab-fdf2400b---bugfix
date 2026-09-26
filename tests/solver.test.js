@@ -356,3 +356,192 @@ test('大目标差值不触发逐层展开（常量区间解析累加）', () =>
   assert.deepEqual(r.phases.map((p) => p.phase), [0, 5]);
   assert.equal(r.totalCost, 3 * Math.abs(5 - 1000000));
 });
+
+/* ---------------- 8 探针 / 24 观测批量验收场景 ---------------- */
+
+function batchInput() {
+  const probes = Array.from({ length: 8 }, (_, i) => ({ id: i, lo: -10, hi: 10 }));
+  const edges = [
+    { from: 0, to: 1, target: 0, weight: 1 },    // P0→P1，目标 0
+    { from: 1, to: 0, target: -10, weight: 1 },  // P1→P0，目标 −10（反向读数）
+    { from: 0, to: 1, target: 10, weight: 1 },   // P0→P1，目标 10（同向重复读数）
+  ];
+  for (let i = 0; i < 21; i++) {
+    edges.push({ from: 2, to: 2, target: 0, weight: 1 }); // P2→P2 自环
+  }
+  return { probes, reference: 0, edges };
+}
+
+test('批量场景：混合正反方向的重复读数给出全局最优而非加权平均', () => {
+  const input = batchInput();
+  const r = solver.solve(input);
+  assert.ok(r.ok, JSON.stringify(r.errors));
+
+  // 正确结论：P1=10、总代价 10；完整相位向量 P0=0、P1=10，其余均为 −10
+  assert.equal(r.totalCost, 10);
+  assert.deepEqual(r.phases.map((p) => p.phase), [0, 10, -10, -10, -10, -10, -10, -10]);
+
+  // 三条关键读数：实际差 / 残差 / 贡献
+  assert.deepEqual(
+    r.edges.slice(0, 3).map((e) => [e.actual, e.residual, e.contribution]),
+    [[10, 10, 10], [-10, 0, 0], [10, 0, 0]],
+  );
+
+  // 21 条自环读数：实际差 0、残差 0、贡献 0
+  for (const e of r.edges.slice(3)) {
+    assert.equal(e.from, 2);
+    assert.equal(e.to, 2);
+    assert.deepEqual([e.actual, e.residual, e.contribution], [0, 0, 0]);
+  }
+});
+
+test('批量场景：逐边明细与输入逐条对应、彼此一致并合计为总代价', () => {
+  const input = batchInput();
+  const r = solver.solve(input);
+  assert.ok(r.ok, JSON.stringify(r.errors));
+  assert.equal(r.edges.length, input.edges.length);
+
+  const byId = Object.fromEntries(r.phases.map((p) => [p.id, p.phase]));
+  let sum = 0;
+  input.edges.forEach((src, i) => {
+    const row = r.edges[i];
+    assert.equal(row.index, i, `第 ${i} 行顺序错位`);
+    assert.equal(row.from, src.from);
+    assert.equal(row.to, src.to);
+    assert.equal(row.target, src.target);
+    assert.equal(row.weight, src.weight);
+    const actual = byId[src.to] - byId[src.from];
+    assert.equal(row.actual, actual, `边 ${i} 实际差不可复算`);
+    assert.equal(row.residual, actual - src.target, `边 ${i} 残差不可复算`);
+    assert.equal(row.contribution, src.weight * Math.abs(actual - src.target),
+      `边 ${i} 贡献不可复算`);
+    sum += row.contribution;
+  });
+  assert.equal(sum, r.totalCost);
+  assert.equal(r.stats.flowValue + r.stats.constantTerm, r.totalCost);
+});
+
+test('每条观测独立计入：重排边与探针顺序不改变结论，明细仍绑定原序号', () => {
+  const input = batchInput();
+  const shuffled = {
+    probes: [...input.probes].reverse().map((p) => ({ ...p })),
+    reference: 0,
+    edges: [...input.edges].reverse(),
+  };
+  const r1 = solver.solve(input);
+  const r2 = solver.solve(shuffled);
+  assert.ok(r2.ok, JSON.stringify(r2.errors));
+
+  const byId2 = Object.fromEntries(r2.phases.map((p) => [p.id, p.phase]));
+  for (const p of r1.phases) assert.equal(byId2[p.id], p.phase);
+  assert.equal(r2.totalCost, r1.totalCost);
+
+  // 明细随输入顺序重排，但每行仍精确对应其原始观测
+  const revEdges = shuffled.edges;
+  revEdges.forEach((src, i) => {
+    const row = r2.edges[i];
+    assert.equal(row.index, i);
+    assert.equal(row.from, src.from);
+    assert.equal(row.to, src.to);
+    assert.equal(row.target, src.target);
+    assert.equal(row.weight, src.weight);
+    assert.equal(row.contribution, src.weight * Math.abs(row.residual));
+  });
+  assert.equal(r2.edges.reduce((s, e) => s + e.contribution, 0), r2.totalCost);
+});
+
+/* ---------------- 大阵列（≥8 探针）窄范围随机对拍：专打重复读数合并路径 ---------------- */
+
+test('大阵列对拍：8–10 探针下混合正反重复读数 / 权重 / 自环仍与暴力枚举一致', () => {
+  const rand = mulberry32(20260926);
+  const ri = (n) => Math.floor(rand() * n);
+
+  for (let trial = 0; trial < 24; trial++) {
+    const n = 8 + ri(3); // 8–10 个探针（触发旧的 ≥8/≥24 合并分支的规模）
+    const probes = [];
+    for (let i = 0; i < n; i++) {
+      const lo = ri(5) - 2; // −2..2
+      probes.push({ id: i, lo, hi: lo + ri(3) }); // 宽度 0..2，枚举可行
+    }
+    const reference = ri(n);
+    probes[reference] = { id: reference, lo: -1, hi: 1 }; // 参考含 0
+
+    const m = 12 + ri(13); // 12–24 条边
+    const edges = [];
+    const pairs = [];
+    for (let i = 0; i < m; i++) {
+      let from;
+      let to;
+      // 60% 概率复用已出现的有序端点对（含反向对与自环），制造混合方向的重复读数
+      if (pairs.length && rand() < 0.6) {
+        [from, to] = pairs[ri(pairs.length)];
+      } else {
+        from = ri(n);
+        to = ri(n);
+        pairs.push([from, to]);
+      }
+      edges.push({
+        from,
+        to,
+        target: ri(9) - 4, // −4..4
+        weight: 1 + ri(4), // 1..4，权重不一
+      });
+    }
+
+    const input = { probes, reference, edges };
+    const r = solver.solve(input);
+    assert.ok(r.ok, `trial ${trial}: ${JSON.stringify(r.errors)}`);
+
+    const bf = bruteForce(input);
+    const gotVec = r.phases.map((p) => p.phase);
+    assert.equal(r.totalCost, bf.cost, `trial ${trial} 成本不一致: ${JSON.stringify(input)}`);
+    assert.deepEqual(gotVec, bf.vec, `trial ${trial} 字典序最小向量不一致: ${JSON.stringify(input)}`);
+
+    // 全部逐边明细独立可复算、合计等于总代价
+    assert.equal(r.edges.length, edges.length, `trial ${trial} 明细条数不符`);
+    const idx = new Map([...probes].sort((a, b) => a.id - b.id).map((p, i) => [p.id, i]));
+    let sum = 0;
+    edges.forEach((src, i) => {
+      const row = r.edges[i];
+      assert.equal(row.index, i);
+      assert.equal(row.from, src.from);
+      assert.equal(row.to, src.to);
+      const actual = gotVec[idx.get(src.to)] - gotVec[idx.get(src.from)];
+      assert.equal(row.actual, actual, `trial ${trial} 边 ${i} 实际差不符`);
+      assert.equal(row.residual, actual - src.target);
+      assert.equal(row.contribution, src.weight * Math.abs(actual - src.target));
+      sum += row.contribution;
+    });
+    assert.equal(sum, r.totalCost, `trial ${trial} 明细合计不符`);
+    assert.equal(r.stats.flowValue + r.stats.constantTerm, r.totalCost,
+      `trial ${trial} 流值不变量被破坏`);
+  }
+});
+
+/* ---------------- Web Worker 回执契约：jobId 原样回传（过期结果由主线程令牌丢弃） ---------------- */
+
+test('Worker 回执始终携带同一 jobId，异常输入也回传错误而非吞掉', () => {
+  const vm = require('node:vm');
+  const fs = require('node:fs');
+  const path = require('node:path');
+
+  // 模拟 Worker 全局：self 即全局对象，solver 已由 importScripts 引入为全局 PhaseSolver
+  const sandbox = { PhaseSolver: solver, importScripts() {} };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'app', 'worker.js'), 'utf8'), sandbox);
+
+  let posted = null;
+  sandbox.self.postMessage = (msg) => { posted = msg; };
+
+  sandbox.self.onmessage({ data: { jobId: 42, input: SAMPLE } });
+  assert.equal(posted.jobId, 42);
+  assert.ok(posted.result.ok);
+  assert.equal(posted.result.totalCost, 4);
+
+  // 旧 Worker 迟到的回执 jobId 不会等于当前令牌——主线程据此丢弃；这里先验证契约本身
+  sandbox.self.onmessage({ data: { jobId: 99, input: null } });
+  assert.equal(posted.jobId, 99);
+  assert.equal(posted.result.ok, false);
+  assert.ok(Array.isArray(posted.result.errors));
+});

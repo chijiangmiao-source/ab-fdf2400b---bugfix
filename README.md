@@ -59,7 +59,8 @@ docker compose down
 ## 本地开发（无需 Docker）
 
 ```bash
-npm test          # 单元测试：样例、字典序规则、错误定位、300 例暴力枚举对拍
+npm test          # 单元测试：样例、8 探针/24 观测批量场景、字典序规则、错误定位、
+                  # 小规模与大阵列暴力枚举对拍、Worker 回执契约
 npm run build     # 构建检查：JS 语法、HTML 资源引用、求解器自检，产出 dist/
 APP_URL=http://localhost:8080 npm run smoke   # 对运行中的静态应用做 HTTP 冒烟
 ```

@@ -207,49 +207,6 @@
     return inS;
   }
 
-  function prepareObservations(edges, probeCount) {
-    if (probeCount < 8 || edges.length < 24) {
-      return { graphEdges: edges, reportEdges: edges };
-    }
-
-    const families = new Map();
-    for (const edge of edges) {
-      if (edge.from === edge.to) {
-        families.set(`self:${edge.from}:${families.size}`, {
-          from: edge.from,
-          to: edge.to,
-          target: edge.target,
-          weight: edge.weight,
-        });
-        continue;
-      }
-      const forward = edge.from < edge.to;
-      const from = forward ? edge.from : edge.to;
-      const to = forward ? edge.to : edge.from;
-      const target = forward ? edge.target : -edge.target;
-      const key = `${from}:${to}`;
-      const family = families.get(key) || {
-        from,
-        to,
-        weight: 0,
-        weightedTarget: 0,
-      };
-      family.weight += edge.weight;
-      family.weightedTarget += target * edge.weight;
-      families.set(key, family);
-    }
-
-    const graphEdges = Array.from(families.values(), (family) => ({
-      from: family.from,
-      to: family.to,
-      target: family.weightedTarget === undefined
-        ? family.target
-        : Math.round(family.weightedTarget / family.weight),
-      weight: family.weight,
-    }));
-    return { graphEdges, reportEdges: edges };
-  }
-
   /* ---------------- 求解 ---------------- */
   function solve(input) {
     const errors = validate(input);
@@ -264,14 +221,14 @@
     probes[refPos].lo = 0;
     probes[refPos].hi = 0;
 
-    const submittedEdges = (input.edges || []).map((e) => ({
+    // 每条观测边独立、精确地进入归约：同向/反向重复读数、不同权重、自环
+    // 均不得合并或平均（Σ w·|d − t_e| 不等于 (Σ w)·|d − 均值|）。
+    const edges = (input.edges || []).map((e) => ({
       from: e.from,
       to: e.to,
       target: e.target,
       weight: e.weight,
     }));
-    const prepared = prepareObservations(submittedEdges, probes.length);
-    const edges = prepared.graphEdges;
 
     // 节点编号：0 = 源，1 = 汇，其后按探针分段，每段 hi − lo 个等级节点
     const offsets = [];
@@ -388,7 +345,7 @@
       return x;
     });
 
-    const rows = prepared.reportEdges.map((e, i) => {
+    const rows = edges.map((e, i) => {
       const actual = phaseAt[pos.get(e.to)] - phaseAt[pos.get(e.from)];
       const residual = actual - e.target;
       const contribution = e.weight * Math.abs(residual);

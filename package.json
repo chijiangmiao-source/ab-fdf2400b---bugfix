@@ -1,0 +1,12 @@
+{
+  "name": "flux-phase-calibrator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "超导磁通探针阵列整数相位面复核：有序整数标签凸代价 → 最小割（Ishikawa 归约）",
+  "scripts": {
+    "test": "node --test tests/",
+    "build": "node tools/build.js",
+    "smoke": "node tools/smoke.js",
+    "verify": "npm run test && npm run build && npm run smoke"
+  }
+}

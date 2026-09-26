@@ -1,0 +1,32 @@
+name: flux-phase-calibrator
+
+services:
+  # 静态应用：页面经宿主机端口 ${APP_PORT:-8080} 访问
+  app:
+    build:
+      context: .
+      target: app
+    image: flux-phase-app
+    ports:
+      - "${APP_PORT:-8080}:80"
+    # 健康检查直接对应静态应用可用性：请求应用首页本身
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  # 验证容器：代码测试 + 构建检查 + HTTP 冒烟，完成后自行退出并以退出码报告结果
+  verify:
+    build:
+      context: .
+      target: verify
+    image: flux-phase-verify
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      APP_URL: http://app
+    # 运行 npm run verify（test && build && smoke）后退出；退出码即验证结果

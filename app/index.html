@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>超导磁通探针阵列 · 整数相位面复核</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main id="app">
+  <header>
+    <h1>超导磁通探针阵列 · 整数相位面复核</h1>
+    <p class="lede">
+      相邻探针读数带有整周跳变，仅凭互相矛盾的边差观测复原可用于补偿的整数相位面。
+      本页在所有满足范围的整数相位赋值中<strong>精确</strong>最小化
+      <code>Σ w·|(x<sub>v</sub> − x<sub>u</sub>) − t|</code>，
+      同成本时按探针标识升序取字典序最小的相位向量。
+      求解在 Web Worker 中把有序整数标签上的凸代价归约为最小割（Ishikawa 归约），
+      不沿生成树逐边累加、不做浮点近似、不枚举全部赋值。
+    </p>
+  </header>
+
+  <section class="panel" id="panel-probes">
+    <h2>一、探针与参考点</h2>
+    <div class="row">
+      <label for="probe-count">探针数量（2–40）</label>
+      <input id="probe-count" type="number" min="2" max="40" step="1" value="3">
+    </div>
+    <table id="probe-table" class="data">
+      <thead>
+        <tr><th>探针</th><th>相位下限 lo</th><th>相位上限 hi</th><th>参考（固定为 0）</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="panel-edges">
+    <h2>二、有向观测边</h2>
+    <p class="hint">
+      边 <em>u → v</em> 表示观测到 <code>x<sub>v</sub> − x<sub>u</sub></code> 应接近目标差值
+      <code>t</code>；<code>w</code> 为正整数权重。允许闭环与互相矛盾的观测。
+    </p>
+    <table id="edge-table" class="data">
+      <thead>
+        <tr><th>#</th><th>起点 u</th><th>终点 v</th><th>目标差值 t</th><th>权重 w</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <button type="button" id="add-edge">添加边</button>
+  </section>
+
+  <div class="actions">
+    <button type="button" id="load-sample">载入样例（闭环矛盾）</button>
+    <button type="button" id="solve" class="primary">开始复核</button>
+    <button type="button" id="cancel" disabled>取消</button>
+  </div>
+
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <section id="errors" class="panel errors" hidden></section>
+  <section id="result" class="panel" hidden></section>
+
+  <details class="panel" id="sample-note">
+    <summary>关于内置样例：为什么逐边累加不可靠</summary>
+    <p>
+      样例含三个探针 P0（参考，固定 0）、P1、P2，范围均为 [−20, 20]，观测边为
+      P0→P1（t=5, w=1）、P1→P2（t=5, w=1）、P0→P2（t=6, w=10），构成含矛盾的闭环。
+    </p>
+    <p>
+      若沿生成树 P0→P1→P2 逐边累加，得相位 (0, 5, 10)，闭环边 P0→P2 的残差为 4，
+      总代价 <strong>40</strong>。全局最优为 (0, 1, 6)：三条边残差分别为 −4、0、0，
+      总代价 <strong>4</strong>。同成本还有 (0, 2, 6)…(0, 5, 6)，按字典序规则取 (0, 1, 6)。
+    </p>
+  </details>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
